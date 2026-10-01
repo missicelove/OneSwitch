@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+	</array>
+	<key>CFBundleExecutable</key>
+	<string>OneSwitch</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.oneswitch.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>OneSwitch</string>
+	<key>CFBundleDisplayName</key>
+	<string>OneSwitch</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__BUILD__</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OneSwitch 需要访问本地网络，以便通过雷雳线发现并连接另一台 Mac，实现文件同步与键鼠共享。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_oneswitch._tcp</string>
+	</array>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>OneSwitch 使用 AppleScript（osascript）弹出系统管理员密码框，为雷雳网桥配置静态 IP 地址。</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>OneSwitch — personal utility</string>
+</dict>
+</plist>

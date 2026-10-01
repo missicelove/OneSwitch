@@ -1,0 +1,10 @@
+.build/
+.build-*/
+build/
+.swiftpm/
+*.xcodeproj
+.DS_Store
+scripts/deploy-peer.local
+# Local working notes with machine-specific details (kept out of the public repo)
+CLAUDE.md
+AGENTS.md
