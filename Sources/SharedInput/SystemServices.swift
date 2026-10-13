@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ImageIO
 import IOKit.pwr_mgt
 import OneSwitchCore
 
@@ -454,20 +455,23 @@ final class SystemEventInjector: EventInjector, @unchecked Sendable {
 
 /// Clipboard hand-over: the Mac losing control sends its pasteboard if it changed since the last sync.
 /// Text, RTF, HTML and images (PNG preferred; TIFF only when there is no PNG), up to
-/// `ClipboardLimits.maxTotalBytes`. Files are not transferred.
+/// `ClipboardLimits.maxTotalBytes`. Single local raster image files are read as images; other files are not transferred.
 @MainActor
 final class ClipboardSync {
     static let types: [NSPasteboard.PasteboardType] = [.string, .rtf, .html, .png, .tiff]
     private let pasteboard: NSPasteboard
     private let maxTotalBytes: Int
+    private let readData: (NSPasteboard.PasteboardType) -> Data?
     /// changeCount already sent or written by us (-1: never synced, so the first hand-over sends).
     private var syncedChangeCount = -1
     /// Converts a received image into the other image type on demand (kept alive while it is on the board).
     private var converter: ImageTypeConverter?
 
-    init(pasteboard: NSPasteboard = .general, maxTotalBytes: Int = ClipboardLimits.maxTotalBytes) {
+    init(pasteboard: NSPasteboard = .general, maxTotalBytes: Int = ClipboardLimits.maxTotalBytes,
+         readData: ((NSPasteboard.PasteboardType) -> Data?)? = nil) {
         self.pasteboard = pasteboard
         self.maxTotalBytes = maxTotalBytes
+        self.readData = readData ?? { pasteboard.data(forType: $0) }
     }
 
     /// The pasteboard change last sent or written by us.
@@ -484,25 +488,66 @@ final class ClipboardSync {
     func snapshotIfChanged() -> [ClipboardItem]? {
         let pb = pasteboard
         guard pb.changeCount != syncedChangeCount else { return nil }
-        syncedChangeCount = pb.changeCount
+        let change = pb.changeCount
         let available = Set(pb.types ?? [])
         var items: [ClipboardItem] = []
         var total = 0
+        var unreadable = false
+        var oversizedPNG = false
         // Room for the codec's framing (count + two length prefixes and the type name per item).
         let overhead = 4 + Self.types.count * 64
         for type in Self.types where available.contains(type) {
             // Prefer PNG over the (much larger) TIFF rendition of the same image — decide before asking for
             // the data: a promised TIFF would otherwise be rendered by the source app, synchronously on main.
-            if type == .tiff && items.contains(where: { $0.type == NSPasteboard.PasteboardType.png.rawValue }) { continue }
-            guard let data = pb.data(forType: type), !data.isEmpty else { continue }
+            if type == .tiff && (oversizedPNG || items.contains(where: { $0.type == NSPasteboard.PasteboardType.png.rawValue })) { continue }
+            guard let data = readData(type), !data.isEmpty else {
+                unreadable = true
+                continue
+            }
             guard total + data.count + overhead <= maxTotalBytes else {
+                if type == .png { oversizedPNG = true }
                 AppLog.warning("input", "clipboard \(type.rawValue) skipped: \(ClipboardSender.formatBytes(data.count)) exceeds the \(maxTotalBytes / 1_048_576) MB limit")
                 continue
             }
             total += data.count
             items.append(ClipboardItem(type: type.rawValue, data: data))
         }
-        return items.isEmpty ? nil : items
+        // Finder and some screenshot tools copy only a file URL. Send its image bytes, never a
+        // machine-local path, and only for a single supported raster image.
+        if items.isEmpty, available.contains(.fileURL), let image = snapshotImageFile() {
+            items.append(image)
+            AppLog.info("input", "clipboard local image file read: \(ClipboardSender.describe(items))")
+        }
+        // A promised image may not be ready yet. Never send HTML alone and consume its change number.
+        guard !unreadable, pb.changeCount == change else {
+            AppLog.debug("input", "clipboard snapshot deferred: change \(change), current \(pb.changeCount), unreadable \(unreadable)")
+            return nil
+        }
+        guard !items.isEmpty else { return nil }
+        syncedChangeCount = change
+        return items
+    }
+
+    private func snapshotImageFile() -> ClipboardItem? {
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              urls.count == 1, let url = urls.first, url.isFileURL,
+              let info = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              info.isRegularFile == true, let size = info.fileSize, size > 0, size + 512 <= maxTotalBytes,
+              let data = try? Data(contentsOf: url), data.count + 512 <= maxTotalBytes,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let format = CGImageSourceGetType(source) as String? else { return nil }
+        switch format {
+        case "public.png": return ClipboardItem(type: NSPasteboard.PasteboardType.png.rawValue, data: data)
+        case "public.tiff": return ClipboardItem(type: NSPasteboard.PasteboardType.tiff.rawValue, data: data)
+        case "public.jpeg", "public.heic":
+            guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = props[kCGImagePropertyPixelWidth] as? Int,
+                  let height = props[kCGImagePropertyPixelHeight] as? Int,
+                  width > 0, height > 0, width <= maxTotalBytes / 4 / height,
+                  let png = ImageTypeConverter.convert(data, to: .png), png.count + 512 <= maxTotalBytes else { return nil }
+            return ClipboardItem(type: NSPasteboard.PasteboardType.png.rawValue, data: png)
+        default: return nil
+        }
     }
 
     func apply(_ items: [ClipboardItem]) {

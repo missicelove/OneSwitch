@@ -67,6 +67,7 @@ final class InputSession {
     private var peerHello: InputHello?
     private var lastSentHello: InputHello?
     private var closed = false
+    private var clipboardOfferGeneration: UInt64 = 0
     /// Keeps App Nap / timer coalescing away while connected: this is a background (menu-bar) app, and a
     /// napped heartbeat timer makes the other side time out — or delays every forwarded event.
     private var activity: NSObjectProtocol?
@@ -344,21 +345,29 @@ final class InputSession {
     /// first); encoding and the paced transfer run off the main thread.
     private func sendClipboard() {
         guard settings.clipboardSync else { return }
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, !self.closed, self.settings.clipboardSync,
-                      let items = self.clipboard.snapshotIfChanged() else { return }
-                let chunked = self.peerHello?.supports(InputFeature.clipboardChunks) ?? false
-                let sender = self.clipboardSender
-                let clipboard = self.clipboard
-                let change = clipboard.syncedChange
-                DispatchQueue.global(qos: .utility).async {
-                    AppLog.info("input", sender.send(items, chunked: chunked) { outcome in
-                        // The link broke mid-transfer (e.g. the other Mac disconnected): offer it again next
-                        // time. Superseded / too large: nothing to retry.
-                        guard outcome == .failed else { return }
-                        DispatchQueue.main.async { MainActor.assumeIsolated { clipboard.markUnsent(changeCount: change) } }
-                    })
+        clipboardOfferGeneration &+= 1
+        let generation = clipboardOfferGeneration
+        // Some apps publish their copied image after the cursor has already crossed the edge.
+        // Recheck briefly; receiving a peer clipboard or regaining control cancels these offers.
+        for delay in [0.0, 0.2, 0.6, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.closed, self.settings.clipboardSync,
+                          self.clipboardOfferGeneration == generation,
+                          self.model.activity == (self.settings.role == .server ? .controllingPeer : .ready),
+                          let items = self.clipboard.snapshotIfChanged() else { return }
+                    let chunked = self.peerHello?.supports(InputFeature.clipboardChunks) ?? false
+                    let sender = self.clipboardSender
+                    let clipboard = self.clipboard
+                    let change = clipboard.syncedChange
+                    DispatchQueue.global(qos: .utility).async {
+                        AppLog.info("input", sender.send(items, chunked: chunked) { outcome in
+                            // The link broke mid-transfer (e.g. the other Mac disconnected): offer it again next
+                            // time. Superseded / too large: nothing to retry.
+                            guard outcome == .failed else { return }
+                            DispatchQueue.main.async { MainActor.assumeIsolated { clipboard.markUnsent(changeCount: change) } }
+                        })
+                    }
                 }
             }
         }
@@ -370,6 +379,7 @@ final class InputSession {
             AppLog.info("input", "clipboard received but 剪贴板同步 is off here; ignored")
             return
         }
+        clipboardOfferGeneration &+= 1
         clipboard.apply(items)
     }
 

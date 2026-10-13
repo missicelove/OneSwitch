@@ -1401,6 +1401,39 @@ func checkClipboardPasteboard() {
     pb.setData(tiffData, forType: .tiff)
     check(sync.snapshotIfChanged()?.map(\.type) == [NSPasteboard.PasteboardType.tiff.rawValue], "TIFF sent when there is no PNG")
     check(ImageTypeConverter.convert(tiffData, to: .png).flatMap { NSBitmapImageRep(data: $0) }?.pixelsWide == 4, "TIFF → PNG conversion")
+    pb.clearContents()
+    pb.setData(pngData, forType: .png)
+    pb.setData(Data("<img>".utf8), forType: .html)
+    var imageReady = false
+    let delayed = ClipboardSync(pasteboard: pb, readData: { type in
+        if type == .png && !imageReady { return nil }
+        return pb.data(forType: type)
+    })
+    let delayedChange = pb.changeCount
+    check(delayed.snapshotIfChanged() == nil, "unready promised PNG does not send HTML alone")
+    check(delayed.syncedChange != delayedChange, "unreadable image is not marked synced")
+    imageReady = true
+    check(delayed.snapshotIfChanged()?.contains { $0.type == NSPasteboard.PasteboardType.png.rawValue } == true,
+          "same change number retried when promised PNG becomes ready")
+    check(delayed.snapshotIfChanged() == nil, "successful retry is not repeated")
+    let imageDir = FileManager.default.temporaryDirectory.appendingPathComponent("clipboard-file-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: imageDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: imageDir) }
+    let imageURL = imageDir.appendingPathComponent("copied.png")
+    try! pngData.write(to: imageURL)
+    pb.clearContents()
+    pb.writeObjects([imageURL as NSURL])
+    let fileSync = ClipboardSync(pasteboard: pb)
+    let fileSnap = fileSync.snapshotIfChanged()
+    check(fileSnap == [ClipboardItem(type: NSPasteboard.PasteboardType.png.rawValue, data: pngData)],
+          "file URL only: local PNG copied as image bytes")
+    check(fileSync.snapshotIfChanged() == nil, "file URL image is not sent repeatedly")
+    let textURL = imageDir.appendingPathComponent("note.txt")
+    try! Data("not an image".utf8).write(to: textURL)
+    pb.clearContents(); pb.writeObjects([textURL as NSURL])
+    check(fileSync.snapshotIfChanged() == nil, "non-image file URL is not transferred")
+    pb.clearContents(); pb.writeObjects([imageURL as NSURL, textURL as NSURL])
+    check(fileSync.snapshotIfChanged() == nil, "multiple files are not silently reduced to one image")
     let tiny = ClipboardSync(pasteboard: pb, maxTotalBytes: 1024)
     pb.clearContents()
     pb.setData(Data(count: 4096), forType: .png)
